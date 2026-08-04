@@ -42,6 +42,48 @@ def _rasterize(
     image_height,
     sh_degree,
 ):
+    # gsplat <=1.4 (the last release that builds with our CUDA 12.6 toolkit)
+    # does not accept batched Gaussian parameters. CHORD's dynamic renderer
+    # supplies one Gaussian state per frame, so render those states separately
+    # while preserving autograd and concatenate the frame outputs.
+    if means3d.dim() == 3:
+        batch_size = means3d.shape[0]
+
+        def frame_value(value, index):
+            if isinstance(value, torch.Tensor) and value.dim() > 0 and value.shape[0] == batch_size:
+                return value[index]
+            return value
+
+        def frame_camera(value, index):
+            value = frame_value(value, index)
+            return value.unsqueeze(0) if value.dim() == 2 else value
+
+        def frame_background(value, index):
+            value = frame_value(value, index)
+            return value.unsqueeze(0) if value.dim() == 1 else value
+
+        rendered = [
+            _rasterize(
+                frame_value(means3d, index),
+                frame_value(rotations, index),
+                frame_value(scales, index),
+                frame_value(opacity, index),
+                frame_value(colors, index),
+                frame_camera(view_mats, index),
+                frame_camera(Ks, index),
+                frame_background(bg_color, index),
+                image_width,
+                image_height,
+                sh_degree,
+            )
+            for index in range(batch_size)
+        ]
+        # Preserve gsplat's separate Gaussian-batch and camera-batch axes:
+        # [T, C, H, W, channels], where C is normally one camera per frame.
+        render_colors = torch.stack([item[0] for item in rendered], dim=0)
+        render_alphas = torch.stack([item[1] for item in rendered], dim=0)
+        return render_colors, render_alphas, [item[2] for item in rendered]
+
     return rasterization(
         means=means3d,
         quats=rotations,
