@@ -196,21 +196,50 @@ def attention(
             version=fa_version,
         )
     else:
-        if q_lens is not None or k_lens is not None:
+        if window_size != (-1, -1):
             warnings.warn(
-                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+                'Sliding-window attention is unavailable without FlashAttention; using full attention.'
             )
-        attn_mask = None
 
-        q = q.transpose(1, 2).to(dtype)
-        k = k.transpose(1, 2).to(dtype)
-        v = v.transpose(1, 2).to(dtype)
+        # Preserve an existing half dtype. In particular, converting FP16 inputs
+        # to the default BF16 here makes the fallback unusable on pre-Ampere GPUs.
+        half_dtypes = (torch.float16, torch.bfloat16)
+        compute_dtype = q.dtype if q.dtype in half_dtypes else dtype
+        out_dtype = q.dtype
+        q = q.transpose(1, 2).to(compute_dtype)
+        k = k.transpose(1, 2).to(compute_dtype)
+        v = v.transpose(1, 2).to(compute_dtype)
+        if q_scale is not None:
+            q = q * q_scale
+
+        attn_mask = None
+        if q_lens is not None or k_lens is not None:
+            batch, _, lq, _ = q.shape
+            lk = k.shape[2]
+            if q_lens is None:
+                q_lens = torch.full((batch,), lq, device=q.device)
+            else:
+                q_lens = torch.as_tensor(q_lens, device=q.device)
+            if k_lens is None:
+                k_lens = torch.full((batch,), lk, device=q.device)
+            else:
+                k_lens = torch.as_tensor(k_lens, device=q.device)
+            valid_q = torch.arange(lq, device=q.device)[None, :] < q_lens[:, None]
+            valid_k = torch.arange(lk, device=q.device)[None, :] < k_lens[:, None]
+            attn_mask = (valid_q[:, None, :, None] & valid_k[:, None, None, :])
 
         out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            is_causal=causal and attn_mask is None,
+            dropout_p=dropout_p,
+            scale=softmax_scale,
+        )
 
         out = out.transpose(1, 2).contiguous()
-        return out
+        return out.to(out_dtype)
 
 
 def attention_with_qk(

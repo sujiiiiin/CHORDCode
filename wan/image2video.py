@@ -24,6 +24,21 @@ from .modules.t5 import T5EncoderModel
 from .modules.vae2_1 import Wan2_1_VAE
 
 
+def _resolve_wan_dtype(configured_dtype, device):
+    """Use FP16 when native BF16 arithmetic is unavailable (e.g. Tesla V100)."""
+    if configured_dtype != torch.bfloat16 or device.type != "cuda":
+        return configured_dtype
+    major, minor = torch.cuda.get_device_capability(device)
+    if major >= 8:
+        return configured_dtype
+    logging.warning(
+        "GPU compute capability %d.%d has no native BF16 support; using FP16 for Wan and T5.",
+        major,
+        minor,
+    )
+    return torch.float16
+
+
 def _logit_normal_pdf(t, mu=0.0, sigma=1.0):
     eps = 1e-6
     t = np.clip(t, eps, 1.0 - eps)
@@ -94,7 +109,8 @@ class WanI2V:
 
         self.num_train_timesteps = config.num_train_timesteps
         self.boundary = config.boundary
-        self.param_dtype = config.param_dtype
+        self.param_dtype = _resolve_wan_dtype(config.param_dtype, self.device)
+        self.t5_dtype = _resolve_wan_dtype(config.t5_dtype, self.device)
 
         if self.enable_mmgp and (dit_fsdp or use_sp):
             raise ValueError("--enable_mmgp is not compatible with DiT FSDP or sequence parallelism.")
@@ -109,7 +125,7 @@ class WanI2V:
 
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
-            dtype=config.t5_dtype,
+            dtype=self.t5_dtype,
             device=torch.device("cpu"),
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),

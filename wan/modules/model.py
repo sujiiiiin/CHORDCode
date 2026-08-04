@@ -6,7 +6,7 @@ import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
-from .attention import flash_attention, attention_with_qk
+from .attention import attention, attention_with_qk
 
 __all__ = ['WanModel']
 
@@ -147,7 +147,7 @@ class WanSelfAttention(nn.Module):
             self.saved_k = k.detach().cpu()
             self.saved_v = v.detach().cpu()
 
-        x = flash_attention(
+        x = attention(
             q=rope_apply(q, grid_sizes, freqs),
             k=rope_apply(k, grid_sizes, freqs),
             v=v,
@@ -181,10 +181,10 @@ class WanCrossAttention(WanSelfAttention):
         # compute attention
         if save_mid:
             _, qk_mat = attention_with_qk(q, k, v, k_lens=context_lens)
-            x = flash_attention(q, k, v, k_lens=context_lens)
+            x = attention(q, k, v, k_lens=context_lens)
             self.saved_qk_mat = qk_mat.detach().cpu()
         else:
-            x = flash_attention(q, k, v, k_lens=context_lens)
+            x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
