@@ -5,4 +5,8 @@ models/
 tiny_vae/
 LightX2VModel/
 .vscode/
-Wan2.2-I2V-A14B/
+Wan2.2-I2V-A14B
+mydocs/
+submodules/simple-knn/simple_knn.egg-info
+submodules/simple-knn/build
+debug/
