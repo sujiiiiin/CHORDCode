@@ -16,6 +16,7 @@ class MPMWARP(object):
         self.time_profile = {}
 
     def initialize(self, n_particles, n_elements, n_vertices, n_grid=100, grid_lim=1.0, mesh_vertices=None, mesh_faces=None, num_joint_t=0, num_joint_v=0, num_joint_f=0, device="cuda:0"):
+        self.device = device
         self.n_particles = n_particles
         self.n_elements = n_elements
         self.n_vertices = n_vertices
@@ -696,7 +697,7 @@ class MPMWARP(object):
                 wa = wp.vec3(1.5) - fx
                 wb = fx - wp.vec3(1.0)
                 wc = fx - wp.vec3(0.5)
-                w = wp.mat33(
+                w = wp.matrix_from_rows(
                     wp.cw_mul(wa, wa) * 0.5,
                     wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
                     wp.cw_mul(wc, wc) * 0.5,
@@ -734,7 +735,7 @@ class MPMWARP(object):
                 wa = wp.vec3(1.5) - fx
                 wb = fx - wp.vec3(1.0)
                 wc = fx - wp.vec3(0.5)
-                w = wp.mat33(
+                w = wp.matrix_from_rows(
                     wp.cw_mul(wa, wa) * 0.5,
                     wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
                     wp.cw_mul(wc, wc) * 0.5,
@@ -771,7 +772,7 @@ class MPMWARP(object):
                 wa = wp.vec3(1.5) - fx
                 wb = fx - wp.vec3(1.0)
                 wc = fx - wp.vec3(0.5)
-                w = wp.mat33(
+                w = wp.matrix_from_rows(
                     wp.cw_mul(wa, wa) * 0.5,
                     wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
                     wp.cw_mul(wc, wc) * 0.5,
@@ -807,14 +808,16 @@ class MPMWARP(object):
         mesh_id,
         n_grid,
         friction=0.0,
+        device=None,
     ):
+        device = self.device if device is None else device
         collider_param = Mesh_collider()
         collider_param.mesh_id = mesh_id
         collider_param.friction = friction
-        collider_param.weight = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=float, device="cuda:0")
-        collider_param.mesh_v_in = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device="cuda:0")
-        collider_param.mesh_v_out = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device="cuda:0")
-        collider_param.mesh_normal = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device="cuda:0")
+        collider_param.weight = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=float, device=device)
+        collider_param.mesh_v_in = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device=device)
+        collider_param.mesh_v_out = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device=device)
+        collider_param.mesh_normal = wp.zeros(shape=(n_grid, n_grid, n_grid), dtype=wp.vec3, device=device)
 
         @wp.kernel
         def zero_grid(
@@ -862,7 +865,7 @@ class MPMWARP(object):
                 wa = wp.vec3(1.5) - fx
                 wb = fx - wp.vec3(1.0)
                 wc = fx - wp.vec3(0.5)
-                w = wp.mat33(
+                w = wp.matrix_from_rows(
                     wp.cw_mul(wa, wa) * 0.5,
                     wp.vec3(0.0, 0.0, 0.0) - wp.cw_mul(wb, wb) + wp.vec3(0.75),
                     wp.cw_mul(wc, wc) * 0.5,
