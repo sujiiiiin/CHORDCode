@@ -34,14 +34,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-dx", type=float, default=0.025)
     parser.add_argument("--dt", type=float, default=2.0e-4)
     parser.add_argument("--duration", type=float, default=1.0)
+    parser.add_argument("--extra-recovery-duration", type=float, default=0.0)
     parser.add_argument("--output-frames", type=int, default=51)
     parser.add_argument("--youngs-modulus", type=float, default=1200.0)
     parser.add_argument("--poisson-ratio", type=float, default=0.20)
     parser.add_argument("--density", type=float, default=1.0)
     parser.add_argument("--damping", type=float, default=0.9995)
+    parser.add_argument("--fixed-bottom-layers", type=int, default=2)
+    parser.add_argument(
+        "--particle-projection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--collider-radius", type=float, default=0.075)
     parser.add_argument("--press-depth", type=float, default=0.045)
     parser.add_argument("--slide-distance", type=float, default=0.10)
+    parser.add_argument(
+        "--controls",
+        nargs="+",
+        choices=("no_contact", "contact_friction0", "contact_friction04"),
+        default=("no_contact", "contact_friction0", "contact_friction04"),
+    )
     return parser.parse_args()
 
 
@@ -72,6 +85,8 @@ def state_metrics(
     far: np.ndarray,
     center: np.ndarray,
     radius: float,
+    mu: float,
+    lam: float,
 ) -> dict[str, float]:
     displacement = positions - rest
     distances = np.linalg.norm(positions - center[None], axis=1)
@@ -79,6 +94,16 @@ def state_metrics(
     local_down = np.maximum(rest[local_top, 1] - positions[local_top, 1], 0.0)
     movable = fixed == 0
     determinants = np.linalg.det(deformation[movable])
+    identity = np.eye(3, dtype=deformation.dtype)
+    f_error = np.linalg.norm(deformation[movable] - identity, axis=(1, 2))
+    safe_determinants = np.maximum(determinants, 1.0e-8)
+    log_j = np.log(safe_determinants)
+    first_invariant = np.square(deformation[movable]).sum(axis=(1, 2))
+    elastic_energy_density = (
+        0.5 * mu * (first_invariant - 3.0)
+        - mu * log_j
+        + 0.5 * lam * np.square(log_j)
+    )
     return {
         "max_sphere_penetration": float(penetration.max()),
         "local_mean_downward_displacement": float(local_down.mean()),
@@ -89,6 +114,10 @@ def state_metrics(
         "mean_abs_volume_change": float(np.abs(determinants - 1.0).mean()),
         "min_deformation_determinant": float(determinants.min()),
         "max_deformation_determinant": float(determinants.max()),
+        "mean_frobenius_F_minus_I": float(f_error.mean()),
+        "max_frobenius_F_minus_I": float(f_error.max()),
+        "mean_elastic_energy_density": float(elastic_energy_density.mean()),
+        "max_elastic_energy_density": float(elastic_energy_density.max()),
         "mean_speed": float(np.linalg.norm(velocities[movable], axis=1).mean()),
         "kinetic_energy_proxy": float(0.5 * np.square(velocities[movable]).sum()),
     }
@@ -120,7 +149,10 @@ def run_control(
     if not local_top.any() or not far.any():
         raise RuntimeError("Failed to construct local/far particle masks")
 
-    substeps = int(round(args.duration / args.dt))
+    total_duration = args.duration + args.extra_recovery_duration
+    if total_duration <= 0.0:
+        raise ValueError("duration plus extra recovery duration must be positive")
+    substeps = int(round(total_duration / args.dt))
     output_steps = np.linspace(0, substeps, args.output_frames, dtype=np.int64)
     output_lookup = {int(step): index for index, step in enumerate(output_steps)}
     snapshots = np.empty((args.output_frames, len(particles), 3), dtype=np.float32)
@@ -130,8 +162,10 @@ def run_control(
 
     for step in range(substeps + 1):
         current_time = step * args.dt
+        # Keep the original contact motion unchanged. During the extra interval
+        # the collider remains at its lifted final pose with zero velocity.
         collider = collider_state(
-            current_time,
+            min(current_time, args.duration),
             start_center,
             args.press_depth,
             args.slide_distance,
@@ -161,6 +195,8 @@ def run_control(
                         far,
                         collider.center,
                         radius,
+                        config.mu,
+                        config.lam,
                     ),
                 }
             )
@@ -172,6 +208,7 @@ def run_control(
             radius,
             friction,
             collider_enabled,
+            args.particle_projection,
         )
     wp.synchronize_device(args.device)
     rows[-1]["wall_time_seconds"] = time.monotonic() - start_time
@@ -182,9 +219,18 @@ def save_visualization(
     path: Path,
     results: dict[str, tuple[np.ndarray, np.ndarray]],
     radius: float,
+    active_duration: float,
+    total_duration: float,
 ) -> None:
-    selected = [0, 20, 30, 40, 50]
+    frame_count = next(iter(results.values()))[0].shape[0]
+    selected_times = [0.0, 0.4 * active_duration, 0.6 * active_duration, active_duration]
+    if total_duration > active_duration:
+        selected_times.extend([(active_duration + total_duration) * 0.5, total_duration])
+    selected = np.unique(
+        np.rint(np.asarray(selected_times) / total_duration * (frame_count - 1)).astype(int)
+    ).tolist()
     figure, axes = plt.subplots(len(results), len(selected), figsize=(15, 8), sharex=True, sharey=True)
+    axes = np.asarray(axes).reshape(len(results), len(selected))
     for row, (name, (positions, centers)) in enumerate(results.items()):
         for col, frame in enumerate(selected):
             axis = axes[row, col]
@@ -193,7 +239,8 @@ def save_visualization(
             axis.scatter(points[keep, 0], points[keep, 1], s=2, c=points[keep, 1], cmap="viridis")
             circle = plt.Circle((centers[frame, 0], centers[frame, 1]), radius, fill=False, color="red")
             axis.add_patch(circle)
-            axis.set_title(f"{name} t={frame / 50:.2f}")
+            frame_time = frame / (frame_count - 1) * total_duration
+            axis.set_title(f"{name} t={frame_time:.2f}")
             axis.set_aspect("equal")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
@@ -206,7 +253,10 @@ def main() -> None:
     mesh = normalized_mesh(args.scene_dir)
     particles = build_volume_proxy(mesh, args.proxy_pitch)
     bottom = float(particles[:, 1].min())
-    fixed = (particles[:, 1] <= bottom + 1.1 * args.proxy_pitch).astype(np.int32)
+    if args.fixed_bottom_layers <= 0:
+        raise ValueError("fixed-bottom-layers must be positive")
+    fixed_threshold = bottom + (args.fixed_bottom_layers - 1 + 0.1) * args.proxy_pitch
+    fixed = (particles[:, 1] <= fixed_threshold).astype(np.int32)
     mu, lam = lame_parameters(args.youngs_modulus, args.poisson_ratio)
     config = MPMConfig(
         dx=args.grid_dx,
@@ -217,11 +267,12 @@ def main() -> None:
         lam=lam,
         damping=args.damping,
     )
-    controls = {
+    available_controls = {
         "no_contact": (False, 0.0),
         "contact_friction0": (True, 0.0),
         "contact_friction04": (True, 0.4),
     }
+    controls = {name: available_controls[name] for name in args.controls}
     all_rows: list[dict[str, float]] = []
     visual_results = {}
     summary = {
@@ -252,6 +303,10 @@ def main() -> None:
             "peak_local_max_indentation": max(row["local_max_downward_displacement"] for row in rows),
             "peak_penetration": max(row["max_sphere_penetration"] for row in rows),
             "final_recovery_rmse": rows[-1]["movable_rmse_from_rest"],
+            "final_local_indentation": rows[-1]["local_mean_downward_displacement"],
+            "final_mean_frobenius_F_minus_I": rows[-1]["mean_frobenius_F_minus_I"],
+            "final_mean_speed": rows[-1]["mean_speed"],
+            "final_mean_elastic_energy_density": rows[-1]["mean_elastic_energy_density"],
             "final_local_x_displacement": rows[-1]["local_mean_x_displacement"],
             "max_mean_abs_volume_change": max(row["mean_abs_volume_change"] for row in rows),
             "wall_time_seconds": rows[-1]["wall_time_seconds"],
@@ -261,7 +316,13 @@ def main() -> None:
         writer = csv.DictWriter(handle, fieldnames=sorted({key for row in all_rows for key in row}))
         writer.writeheader()
         writer.writerows(all_rows)
-    save_visualization(args.output_dir / "side_view.png", visual_results, args.collider_radius)
+    save_visualization(
+        args.output_dir / "side_view.png",
+        visual_results,
+        args.collider_radius,
+        args.duration,
+        args.duration + args.extra_recovery_duration,
+    )
     with (args.output_dir / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
     print(json.dumps(summary, indent=2))
