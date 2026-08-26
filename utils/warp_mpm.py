@@ -177,6 +177,7 @@ def _g2p(
     collider_radius: float,
     friction: float,
     collider_enabled: int,
+    particle_projection_enabled: int,
     grid_v: wp.array(dtype=wp.vec3),
 ):
     p = wp.tid()
@@ -199,7 +200,7 @@ def _g2p(
                     new_c = new_c + 4.0 * inv_dx * inv_dx * weight * wp.outer(node_v, dpos)
     new_v = new_v * damping
     new_x = x[p] + dt * new_v
-    if collider_enabled == 1:
+    if collider_enabled == 1 and particle_projection_enabled == 1:
         delta = new_x - collider_center
         distance = wp.length(delta)
         if distance < collider_radius and distance > 1.0e-8:
@@ -239,28 +240,47 @@ class MPMConfig:
 
 
 class WarpMPMSolver:
-    def __init__(self, points: np.ndarray, fixed: np.ndarray, config: MPMConfig, device: str):
+    def __init__(
+        self,
+        points: np.ndarray,
+        fixed: np.ndarray,
+        config: MPMConfig,
+        device: str,
+        initial_positions: np.ndarray | None = None,
+        initial_deformation: np.ndarray | None = None,
+    ):
         wp.init()
         self.device = device
         self.config = config
         points = np.asarray(points, dtype=np.float32)
         fixed = np.asarray(fixed, dtype=np.int32)
+        initial_positions = points if initial_positions is None else np.asarray(initial_positions, dtype=np.float32)
+        if initial_positions.shape != points.shape:
+            raise ValueError("initial_positions must have the same shape as points")
+        identity = np.tile(np.eye(3, dtype=np.float32), (len(points), 1, 1))
+        initial_deformation = (
+            identity
+            if initial_deformation is None
+            else np.asarray(initial_deformation, dtype=np.float32)
+        )
+        if initial_deformation.shape != identity.shape:
+            raise ValueError("initial_deformation must have shape [N, 3, 3]")
         padding = config.padding_cells * config.dx
-        self.origin_np = points.min(axis=0) - padding
-        domain_max = points.max(axis=0) + padding + np.array([0.2, 0.35, 0.2], dtype=np.float32)
+        domain_points = np.concatenate([points, initial_positions], axis=0)
+        self.origin_np = domain_points.min(axis=0) - padding
+        domain_max = domain_points.max(axis=0) + padding + np.array([0.2, 0.35, 0.2], dtype=np.float32)
         dims = np.ceil((domain_max - self.origin_np) / config.dx).astype(np.int32) + 1
         self.nx, self.ny, self.nz = (int(value) for value in dims)
         self.grid_size = self.nx * self.ny * self.nz
         self.particle_count = len(points)
         self.mass = config.density * config.particle_volume
-        identity = np.tile(np.eye(3, dtype=np.float32), (len(points), 1, 1))
         zeros = np.zeros((len(points), 3), dtype=np.float32)
         zero_mats = np.zeros((len(points), 3, 3), dtype=np.float32)
-        self.x = wp.array(points, dtype=wp.vec3, device=device)
+        self.x = wp.array(initial_positions, dtype=wp.vec3, device=device)
         self.rest_x = wp.array(points, dtype=wp.vec3, device=device)
         self.v = wp.array(zeros, dtype=wp.vec3, device=device)
         self.c = wp.array(zero_mats, dtype=wp.mat33, device=device)
-        self.f = wp.array(identity, dtype=wp.mat33, device=device)
+        self.f = wp.array(initial_deformation, dtype=wp.mat33, device=device)
         self.fixed = wp.array(fixed, dtype=wp.int32, device=device)
         self.grid_v = wp.zeros(self.grid_size, dtype=wp.vec3, device=device)
         self.grid_m = wp.zeros(self.grid_size, dtype=float, device=device)
@@ -272,6 +292,7 @@ class WarpMPMSolver:
         collider_radius: float,
         friction: float,
         collider_enabled: bool,
+        particle_projection_enabled: bool = True,
     ) -> None:
         cfg = self.config
         origin = wp.vec3(*self.origin_np.tolist())
@@ -305,7 +326,7 @@ class WarpMPMSolver:
                 self.x, self.rest_x, self.v, self.c, self.f, self.fixed,
                 cfg.dt, cfg.dx, 1.0 / cfg.dx, origin, self.nx, self.ny, self.nz,
                 cfg.damping, center, velocity, collider_radius, friction,
-                int(collider_enabled), self.grid_v,
+                int(collider_enabled), int(particle_projection_enabled), self.grid_v,
             ],
             device=self.device,
         )
