@@ -2,6 +2,7 @@ import sys
 import os
 
 import warp as wp
+import numpy as np
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 from mpm_data_structure import *
@@ -228,7 +229,7 @@ class MPMWARP(object):
         )
 
     def p2g2p(
-        self, mpm_model, mpm_state, dt, mesh_x=None, mesh_v=None, joint_traditional_v=None, joint_verts_v=None, joint_faces_v=None, device="cuda:0"
+        self, mpm_model, mpm_state, dt, mesh_x=None, mesh_v=None, joint_traditional_v=None, joint_verts_v=None, joint_faces_v=None, device="cuda:0", diagnostic=False
     ):
         """
         Some boundary conditions, might not give gradient,
@@ -264,6 +265,13 @@ class MPMWARP(object):
                 dim=self.n_particles,
                 inputs=[self.time, dt, mpm_state, self.impulse_params[k]],
                 device=device,
+            )
+        if diagnostic:
+            velocity = mpm_state.particle_v.numpy()
+            print(
+                f"[MPM diagnostic] t={self.time:.7f} after_force "
+                f"particle_v_max={np.linalg.norm(velocity, axis=1).max():.9g} "
+                f"particle_v_sum={velocity.sum(axis=0).tolist()}", flush=True,
             )
 
         # apply dirichlet particle v modifier
@@ -359,6 +367,14 @@ class MPMWARP(object):
                 inputs=[mpm_state, mpm_model, dt, self.n_no_vertices],
                 device=device,
             )  # apply p2g'
+        if diagnostic:
+            grid_mass = mpm_state.grid_m.numpy()
+            grid_momentum = mpm_state.grid_v_in.numpy()
+            print(
+                f"[MPM diagnostic] after_p2g grid_mass_sum={grid_mass.sum():.9g} "
+                f"grid_momentum_sum={grid_momentum.sum(axis=(0, 1, 2)).tolist()} "
+                f"active_nodes={int(np.count_nonzero(grid_mass))}", flush=True,
+            )
 
         # grid update
         with wp.ScopedTimer(
@@ -369,6 +385,13 @@ class MPMWARP(object):
                 dim=(grid_size),
                 inputs=[mpm_state, mpm_model, dt],
                 device=device,
+            )
+        if diagnostic:
+            grid_velocity = mpm_state.grid_v_out.numpy()
+            print(
+                f"[MPM diagnostic] after_grid_update "
+                f"grid_v_max={np.linalg.norm(grid_velocity, axis=3).max():.9g}",
+                flush=True,
             )
 
         if mpm_model.grid_v_damping_scale < 1.0:
@@ -500,6 +523,13 @@ class MPMWARP(object):
                 )
                 if self.modify_bc[k] is not None:
                     self.modify_bc[k](self.time, dt, self.collider_params[k])
+        if diagnostic:
+            grid_velocity = mpm_state.grid_v_out.numpy()
+            print(
+                f"[MPM diagnostic] after_boundary "
+                f"grid_v_max={np.linalg.norm(grid_velocity, axis=3).max():.9g}",
+                flush=True,
+            )
 
         # # g2p
         # with wp.ScopedTimer(
@@ -522,6 +552,13 @@ class MPMWARP(object):
                 inputs=[mpm_state, mpm_model, dt, self.n_elements],
                 device=device,
             )  # x, v, C, F_trial are updated
+        if diagnostic:
+            velocity = mpm_state.particle_v.numpy()
+            print(
+                f"[MPM diagnostic] after_g2p "
+                f"particle_v_max={np.linalg.norm(velocity, axis=1).max():.9g} "
+                f"particle_v_sum={velocity.sum(axis=0).tolist()}", flush=True,
+            )
 
         # g2p_e
         with wp.ScopedTimer(

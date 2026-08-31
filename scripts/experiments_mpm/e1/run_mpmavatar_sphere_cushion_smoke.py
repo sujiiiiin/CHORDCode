@@ -177,6 +177,19 @@ def main() -> None:
     wp.synchronize_device(args.device)
 
     displacement = snapshots - snapshots[0]
+    penetration = np.maximum(
+        args.sphere_radius
+        - np.linalg.norm(snapshots - centers[:, None, :], axis=2),
+        0.0,
+    )
+    final_top = snapshots[0, :, 1] >= np.quantile(snapshots[0, :, 1], 0.8)
+    final_local = final_top & (
+        np.linalg.norm(
+            snapshots[0][:, [0, 2]] - centers[-1, [0, 2]][None], axis=1
+        )
+        <= args.sphere_radius
+    )
+    final_down = snapshots[0, final_local, 1] - snapshots[-1, final_local, 1]
     summary = {
         "solver": "MPMAvatar warp_mpm (traditional particles only)",
         "material": "jelly (fixed-corotated elasticity)",
@@ -190,6 +203,11 @@ def main() -> None:
         "sphere_radius": args.sphere_radius,
         "sphere_travel": args.sphere_travel,
         "max_particle_displacement": float(np.linalg.norm(displacement, axis=2).max()),
+        "peak_particle_center_penetration": float(penetration.max()),
+        "peak_inside_particle_count": int((penetration > 0.0).sum(axis=1).max()),
+        "final_inside_particle_count": int((penetration[-1] > 0.0).sum()),
+        "final_local_mean_downward_displacement": float(final_down.mean()),
+        "final_local_max_downward_displacement": float(final_down.max()),
         "final_mean_particle_speed": float(np.linalg.norm(state.particle_v.numpy(), axis=1).mean()),
         "finite": bool(np.isfinite(snapshots).all()),
         "mesh_to_simulation_shift": shift.tolist(),
