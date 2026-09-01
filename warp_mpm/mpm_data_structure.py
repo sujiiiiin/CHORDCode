@@ -776,6 +776,18 @@ class Mesh_collider:
     mesh_v_out: wp.array(dtype=wp.vec3, ndim=3)
     mesh_normal: wp.array(dtype=wp.vec3, ndim=3)
 
+
+@wp.struct
+class MeshSDFCollider:
+    """Parameters for signed-distance contact against a moving triangle mesh."""
+
+    mesh_id: wp.uint64
+    friction: float
+    contact_margin: float
+    recovery_factor: float
+    max_recovery_speed: float
+    query_max_dist: float
+
 # for particle moving
 @wp.struct
 class Particle_mover:

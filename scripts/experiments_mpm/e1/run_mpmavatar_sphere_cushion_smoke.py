@@ -48,6 +48,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sphere-radius", type=float, default=0.075)
     parser.add_argument("--sphere-travel", type=float, default=0.03)
     parser.add_argument("--press-duration", type=float, default=0.30)
+    parser.add_argument("--sdf-contact-margin-cells", type=float, default=0.5)
+    parser.add_argument("--sdf-recovery-factor", type=float, default=0.1)
+    parser.add_argument("--sdf-max-recovery-speed", type=float, default=0.5)
     parser.add_argument("--youngs-modulus", type=float, default=1200.0)
     parser.add_argument("--poisson-ratio", type=float, default=0.20)
     parser.add_argument("--density", type=float, default=1.0)
@@ -149,8 +152,12 @@ def main() -> None:
         [0.0, float(positions[:, 1].min() - 0.5 * args.pitch), 0.0],
         [0.0, 1.0, 0.0], surface="sticky", friction=0.0,
     )
-    solver.add_mesh_collider(
-        solver.mesh.id, n_grid=args.grid_resolution, friction=0.0, device=args.device
+    solver.add_mesh_sdf_collider(
+        solver.mesh.id,
+        contact_margin=args.sdf_contact_margin_cells * dx,
+        recovery_factor=args.sdf_recovery_factor,
+        max_recovery_speed=args.sdf_max_recovery_speed,
+        friction=0.0,
     )
 
     steps = int(round(args.duration / args.dt))
@@ -202,6 +209,10 @@ def main() -> None:
         "dt": args.dt,
         "sphere_radius": args.sphere_radius,
         "sphere_travel": args.sphere_travel,
+        "collider": "dynamic mesh SDF with grid recovery velocity",
+        "sdf_contact_margin": args.sdf_contact_margin_cells * dx,
+        "sdf_recovery_factor": args.sdf_recovery_factor,
+        "sdf_max_recovery_speed": args.sdf_max_recovery_speed,
         "max_particle_displacement": float(np.linalg.norm(displacement, axis=2).max()),
         "peak_particle_center_penetration": float(penetration.max()),
         "peak_inside_particle_count": int((penetration > 0.0).sum(axis=1).max()),

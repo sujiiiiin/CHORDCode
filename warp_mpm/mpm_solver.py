@@ -21,6 +21,7 @@ class MPMWARP(object):
         self.n_particles = n_particles
         self.n_elements = n_elements
         self.n_vertices = n_vertices
+        self.grid_lim = grid_lim
         n_no_vertices = n_particles - n_vertices
         self.n_no_vertices = n_no_vertices
         self.num_joint_t = num_joint_t
@@ -48,7 +49,15 @@ class MPMWARP(object):
             points = wp.from_numpy(mesh_vertices, dtype=wp.vec3, device=device, requires_grad=False)
             velocities = wp.zeros_like(points, requires_grad=False)
             indices = wp.from_numpy(mesh_faces.flatten(), dtype=wp.int32, device=device, requires_grad=False)
-            self.mesh = wp.Mesh(points=points, velocities=velocities, indices=indices)
+            # Winding-number support provides a robust inside/outside sign for
+            # dynamic mesh SDF collision.  It is harmless for the legacy
+            # face-splatting collider, which does not query the mesh BVH.
+            self.mesh = wp.Mesh(
+                points=points,
+                velocities=velocities,
+                indices=indices,
+                support_winding_number=True,
+            )
             self.num_mesh_v = mesh_vertices.shape[0]
             self.num_mesh_f = mesh_faces.shape[0]
 
@@ -306,6 +315,9 @@ class MPMWARP(object):
                     inputs=[self.mesh.points, new_mesh_points],
                     device=device,
                 )
+            # Updating points does not update the mesh acceleration structure.
+            # SDF queries in this same substep must see the current geometry.
+            self.mesh.refit()
 
         if mesh_v is not None:
             new_mesh_velocities = wp.from_numpy(mesh_v.detach().cpu().numpy(), dtype=wp.vec3, device=device)
@@ -957,6 +969,109 @@ class MPMWARP(object):
                 state.grid_v_out[grid_x, grid_y, grid_z] = v
         self.mesh_colliders.append([zero_grid, compute_mesh, normalize_grid, collide])
         self.mesh_collider_params.append(collider_param)
+
+    def add_mesh_sdf_collider(
+        self,
+        mesh_id,
+        contact_margin,
+        recovery_factor=0.1,
+        max_recovery_speed=0.5,
+        friction=0.0,
+        query_max_dist=None,
+    ):
+        """Add velocity-level contact using the moving mesh signed distance.
+
+        The collider removes inward relative normal velocity near the surface.
+        For grid nodes already inside the mesh it additionally prescribes an
+        outward recovery velocity proportional to penetration depth.  It does
+        not project particle positions.
+        """
+        if contact_margin < 0.0:
+            raise ValueError("contact_margin must be non-negative")
+        if recovery_factor < 0.0:
+            raise ValueError("recovery_factor must be non-negative")
+        if max_recovery_speed < 0.0:
+            raise ValueError("max_recovery_speed must be non-negative")
+        if friction < 0.0:
+            raise ValueError("friction must be non-negative")
+
+        collider_param = MeshSDFCollider()
+        collider_param.mesh_id = mesh_id
+        collider_param.friction = friction
+        collider_param.contact_margin = contact_margin
+        collider_param.recovery_factor = recovery_factor
+        collider_param.max_recovery_speed = max_recovery_speed
+        collider_param.query_max_dist = (
+            self.grid_lim if query_max_dist is None else query_max_dist
+        )
+        self.collider_params.append(collider_param)
+
+        @wp.kernel
+        def collide_sdf(
+            time: float,
+            dt: float,
+            state: MPMStateStruct,
+            model: MPMModelStruct,
+            param: MeshSDFCollider,
+        ):
+            grid_x, grid_y, grid_z = wp.tid()
+            if state.grid_m[grid_x, grid_y, grid_z] > 1.0e-15:
+                grid_pos = wp.vec3(
+                    wp.float(grid_x) * model.dx,
+                    wp.float(grid_y) * model.dx,
+                    wp.float(grid_z) * model.dx,
+                )
+                query = wp.mesh_query_point_sign_winding_number(
+                    param.mesh_id, grid_pos, param.query_max_dist
+                )
+                if query.result:
+                    closest = wp.mesh_eval_position(
+                        param.mesh_id, query.face, query.u, query.v
+                    )
+                    delta = grid_pos - closest
+                    distance = wp.length(delta)
+                    signed_distance = query.sign * distance
+
+                    if signed_distance < param.contact_margin:
+                        # sign*delta points outward on both sides of a closed
+                        # surface.  At exactly zero distance use the oriented
+                        # face normal as a stable fallback.
+                        normal = wp.mesh_eval_face_normal(param.mesh_id, query.face)
+                        if distance > 1.0e-12:
+                            normal = query.sign * delta / distance
+
+                        collider_v = wp.mesh_eval_velocity(
+                            param.mesh_id, query.face, query.u, query.v
+                        )
+                        relative_v = state.grid_v_out[grid_x, grid_y, grid_z] - collider_v
+                        normal_v = wp.dot(relative_v, normal)
+
+                        penetration = wp.max(-signed_distance, 0.0)
+                        recovery_v = wp.min(
+                            param.max_recovery_speed,
+                            param.recovery_factor * penetration / dt,
+                        )
+
+                        if normal_v < recovery_v:
+                            normal_delta = recovery_v - normal_v
+                            tangent_v = relative_v - normal_v * normal
+                            tangent_speed = wp.length(tangent_v)
+                            if tangent_speed > 1.0e-20:
+                                tangent_v = (
+                                    wp.max(
+                                        0.0,
+                                        tangent_speed - param.friction * normal_delta,
+                                    )
+                                    * tangent_v
+                                    / tangent_speed
+                                )
+                            relative_v = tangent_v + recovery_v * normal
+                            state.grid_v_out[grid_x, grid_y, grid_z] = (
+                                relative_v + collider_v
+                            )
+
+        self.grid_postprocess.append(collide_sdf)
+        self.modify_bc.append(None)
 
     # a cubiod is a rectangular cube'
     # centered at `point`
