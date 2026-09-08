@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import numpy as np
 import torch
 import warp as wp
@@ -44,14 +45,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-resolution", type=int, default=80)
     parser.add_argument("--grid-limit", type=float, default=1.6)
     parser.add_argument("--dt", type=float, default=2.0e-4)
-    parser.add_argument("--duration", type=float, default=0.55)
-    parser.add_argument("--output-frames", type=int, default=41)
+    parser.add_argument("--duration", type=float, default=7.70)
+    parser.add_argument("--output-frames", type=int, default=81)
     parser.add_argument("--initial-gap", type=float, default=0.01)
-    parser.add_argument("--press-travel", type=float, default=0.04)
-    parser.add_argument("--press-duration", type=float, default=0.18)
-    parser.add_argument("--hold-duration", type=float, default=0.04)
-    parser.add_argument("--release-duration", type=float, default=0.12)
+    parser.add_argument("--press-travel", type=float, default=0.12)
+    parser.add_argument("--press-duration", type=float, default=4.80)
+    parser.add_argument("--hold-duration", type=float, default=0.20)
+    parser.add_argument("--release-duration", type=float, default=2.40)
     parser.add_argument("--friction", type=float, default=0.0)
+    parser.add_argument("--material", choices=("elastic", "plastic"), default="elastic")
+    parser.add_argument("--yield-stress", type=float, default=20.0)
     parser.add_argument("--youngs-modulus", type=float, default=1200.0)
     parser.add_argument("--poisson-ratio", type=float, default=0.20)
     parser.add_argument("--density", type=float, default=1.0)
@@ -82,20 +85,53 @@ def save_cross_section(
     path: Path,
     snapshots: np.ndarray,
     cat_vertices0: np.ndarray,
+    cat_faces: np.ndarray,
     cat_offsets: np.ndarray,
 ) -> None:
-    selected = np.linspace(0, len(snapshots) - 1, 4, dtype=int)
+    lowest = np.flatnonzero(np.isclose(cat_offsets, cat_offsets.min(), atol=1.0e-6))
+    selected = np.array([0, int(lowest[0]), int(lowest[-1]), len(snapshots) - 1])
     figure, axes = plt.subplots(1, 4, figsize=(14, 4), sharex=True, sharey=True)
     z_mid = float(np.median(snapshots[0, :, 2]))
     for axis, frame in zip(axes, selected):
         points = snapshots[frame]
         keep = np.abs(points[:, 2] - z_mid) <= 0.015
         cat = cat_vertices0 + np.array([0.0, cat_offsets[frame], 0.0], dtype=np.float32)
-        cat_keep = np.abs(cat[:, 2] - z_mid) <= 0.025
         axis.scatter(points[keep, 0], points[keep, 1], s=3, color="#4c9f70")
-        axis.scatter(cat[cat_keep, 0], cat[cat_keep, 1], s=2, color="crimson", alpha=0.7)
+        segments = []
+        for triangle in cat[cat_faces]:
+            intersections = []
+            for start, end in ((0, 1), (1, 2), (2, 0)):
+                z0, z1 = triangle[start, 2] - z_mid, triangle[end, 2] - z_mid
+                if z0 * z1 <= 0.0 and z0 != z1:
+                    alpha = -z0 / (z1 - z0)
+                    intersections.append(triangle[start, :2] + alpha * (triangle[end, :2] - triangle[start, :2]))
+            if len(intersections) >= 2:
+                segments.append(np.stack(intersections[:2]))
+        axis.add_collection(LineCollection(segments, colors="crimson", linewidths=1.0))
         axis.set_title(f"frame {frame}")
         axis.set_aspect("equal")
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def save_response_curve(
+    path: Path,
+    times: np.ndarray,
+    local_mean_down: np.ndarray,
+    local_max_down: np.ndarray,
+    cat_offsets: np.ndarray,
+) -> None:
+    figure, axis = plt.subplots(figsize=(7, 4))
+    axis.plot(times, local_mean_down, label="local mean", color="#2b8c67")
+    axis.plot(times, local_max_down, label="local max", color="#74c476")
+    axis.set_xlabel("time")
+    axis.set_ylabel("downward cushion displacement")
+    axis.grid(alpha=0.25)
+    axis.legend(loc="upper left")
+    motion_axis = axis.twinx()
+    motion_axis.plot(times, -cat_offsets, label="cat travel", color="crimson", alpha=0.65)
+    motion_axis.set_ylabel("downward cat travel", color="crimson")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -117,6 +153,7 @@ def main() -> None:
     positions, shift = shift_into_mpm_domain(volume.positions, args.grid_limit, 4.0 * dx)
 
     cat_vertices0 = np.asarray(cat_mesh.vertices, dtype=np.float32) + shift
+    cat_vertices0[:, [1, 2]] *= -1.0  # Rotate the rigid cat 180 degrees about X.
     alignment = np.zeros(3, dtype=np.float32)
     alignment[[0, 2]] = (
         0.5 * (positions[:, [0, 2]].min(axis=0) + positions[:, [0, 2]].max(axis=0))
@@ -148,7 +185,8 @@ def main() -> None:
         model,
         state,
         {
-            "material": "jelly",
+            "material": "jelly" if args.material == "elastic" else "plasticine",
+            "yield_stress": args.yield_stress,
             "g": [0.0, 0.0, 0.0],
             "density": args.density,
             "grid_v_damping_scale": 1.0,
@@ -227,8 +265,10 @@ def main() -> None:
         "solver": "MPMAvatar warp_mpm (traditional cushion particles only)",
         "process": "rigid cat mesh press, hold, release, then free cushion rebound",
         "collider_mesh": "obj_0.glb",
+        "cat_upside_down": True,
         "cushion_mesh": "obj_2.glb",
-        "material": "jelly (fixed-corotated elasticity)",
+        "material": args.material,
+        "yield_stress": args.yield_stress if args.material == "plastic" else None,
         "particle_count": len(positions),
         "cat_vertex_count": len(cat_vertices0),
         "cat_face_count": len(cat_faces),
@@ -273,7 +313,17 @@ def main() -> None:
         local_mean_downward_displacement=local_mean_down,
     )
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    save_cross_section(args.output_dir / "cross_section.png", snapshots, cat_vertices0, offsets)
+    sampled_times = output_steps.astype(np.float64) * args.dt
+    save_cross_section(
+        args.output_dir / "cross_section.png", snapshots, cat_vertices0, cat_faces, offsets
+    )
+    save_response_curve(
+        args.output_dir / "response_curve.png",
+        sampled_times,
+        local_mean_down,
+        local_max_down,
+        offsets,
+    )
     print(json.dumps(summary, indent=2))
 
 
