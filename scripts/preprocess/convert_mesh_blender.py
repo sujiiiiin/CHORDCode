@@ -220,9 +220,6 @@ def subdivide_long_edges_once(
     vertices: List[List[float]] = np.asarray(mesh.vertices, dtype=np.float32).tolist()
     faces = np.asarray(mesh.faces, dtype=np.int64)
     colors_list: List[List[float]] = np.asarray(colors, dtype=np.float32).tolist()
-    # Keep texture coordinates through subdivision; interpolate UVs, not texels.
-    source_uv = getattr(mesh.visual, "uv", None)
-    uvs = np.asarray(source_uv, dtype=np.float64).tolist() if source_uv is not None else None
 
     changed = False
     new_faces: List[Tuple[int, int, int]] = []
@@ -241,8 +238,6 @@ def subdivide_long_edges_once(
 
         vertices.append(((vi + vj) * 0.5).tolist())
         colors_list.append(((ci + cj) * 0.5).tolist())
-        if uvs is not None:
-            uvs.append(((np.asarray(uvs[i]) + np.asarray(uvs[j])) * 0.5).tolist())
         idx = len(vertices) - 1
         edge_cache[key] = idx
         return idx
@@ -287,11 +282,6 @@ def subdivide_long_edges_once(
         faces=np.asarray(new_faces, dtype=np.int64),
         process=False,
     )
-    if uvs is not None:
-        mesh_new.visual = trimesh.visual.texture.TextureVisuals(
-            uv=np.asarray(uvs), material=mesh.visual.material,
-        )
-        colors_list = extract_vertex_colors(mesh_new)
     return mesh_new, np.asarray(colors_list, dtype=np.float32), changed
 
 
@@ -362,48 +352,6 @@ def compute_vertex_edge_scales(vertices: np.ndarray, faces: np.ndarray, min_scal
     return scales.astype(np.float32)
 
 
-def surface_scales_and_rotations(mesh, scales, tangent_factor, normal_ratio, robust=False):
-    """Project the baseline covariance onto the tangent plane, then thin it."""
-    from scipy.spatial.transform import Rotation
-    normals = np.asarray(mesh.vertex_normals).copy()
-    lengths = np.linalg.norm(normals, axis=1)
-    normals[lengths < 1e-12] = [0, 0, 1]
-    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    helper = np.eye(3)[np.argmin(np.abs(normals), axis=1)]
-    tangent = np.cross(helper, normals)
-    tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
-    basis = np.stack((tangent, np.cross(normals, tangent)), axis=-1)
-    covariance = np.einsum('nki,nk,nkj->nij', basis, scales ** 2, basis)
-    values, vectors = np.linalg.eigh(covariance)
-    axes = basis @ vectors
-    # Right-handed local frame, with its third axis along the mesh normal.
-    first = axes[:, :, 0]
-    rotation = np.stack((first, np.cross(normals, first), normals), axis=-1)
-    tangent_scales = np.sqrt(np.maximum(values, 1e-20))
-    result = np.column_stack((tangent_scales * tangent_factor,
-                              tangent_scales.min(axis=1) * normal_ratio))
-    if robust:
-        # Unique topological neighbors, projected into the existing tangent frame.
-        # Keep orientation and normal thickness identical to the surface baseline.
-        edges = np.asarray(mesh.edges_unique)
-        neighbors = [[] for _ in range(len(mesh.vertices))]
-        for a, b in edges:
-            delta = mesh.vertices[b] - mesh.vertices[a]
-            for vertex, offset in ((a, delta), (b, -delta)):
-                projected = offset @ rotation[vertex, :, :2]
-                distance = np.linalg.norm(projected)
-                if distance > 1e-12:
-                    neighbors[vertex].append(distance)
-        spacing = np.array([np.median(n) if n else 0.0 for n in neighbors])
-        valid = spacing > 0
-        if valid.any():
-            # Object-local cap prevents sparse outliers from producing giant splats.
-            spacing[valid] = np.minimum(spacing[valid], 2 * np.median(spacing[valid]))
-            result[valid, :2] = spacing[valid, None] * tangent_factor
-    quaternion = Rotation.from_matrix(rotation).as_quat()[:, [3, 0, 1, 2]]
-    return result.astype(np.float32), quaternion.astype(np.float32)
-
-
 def build_connected_vertices(vertices: np.ndarray, faces: np.ndarray) -> dict:
     edges = np.concatenate(
         [
@@ -431,7 +379,6 @@ def write_gaussian_ply(
     scales: np.ndarray,
     sh_degree: int,
     init_opacity: float,
-    rotations: Optional[np.ndarray] = None,
 ) -> None:
     ply_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -444,8 +391,6 @@ def write_gaussian_ply(
     scale = np.log(scales.astype(np.float32))
     rotation = np.zeros((len(vertices), 4), dtype=np.float32)
     rotation[:, 0] = 1.0
-    if rotations is not None:
-        rotation = rotations
 
     dtype_full = [(name, "f4") for name in construct_attribute_names(sh_degree)]
     elements = np.empty(len(vertices), dtype=dtype_full)
@@ -493,13 +438,6 @@ def convert_single_mesh(args, job: MeshJob, norm_ref: Optional[NormalizationRef]
         scale_shrink=args.scale_shrink,
     )
 
-    rotations = None
-    if args.shape_mode in ("surface", "surface_robust"):
-        scales, rotations = surface_scales_and_rotations(
-            mesh, scales, args.tangent_factor, args.normal_ratio,
-            robust=args.shape_mode == "surface_robust")
-        scales = np.maximum(scales, args.min_scale)
-
     point_cloud_dir = job.output_root / "point_cloud" / f"iteration_{args.output_iteration}"
     ply_path = point_cloud_dir / "point_cloud.ply"
     write_gaussian_ply(
@@ -509,7 +447,6 @@ def convert_single_mesh(args, job: MeshJob, norm_ref: Optional[NormalizationRef]
         scales=scales,
         sh_degree=args.sh_degree,
         init_opacity=args.init_opacity,
-        rotations=rotations,
     )
 
     if not args.skip_connected_vertices:
@@ -541,9 +478,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--output_iteration", type=int, default=0)
     parser.add_argument("--sh_degree", type=int, default=3)
 
-    parser.add_argument("--shape_mode", choices=["legacy", "surface", "surface_robust"], default="legacy")
-    parser.add_argument("--tangent_factor", type=float, default=1.0)
-    parser.add_argument("--normal_ratio", type=float, default=0.1)
     parser.add_argument("--target_vertices", type=int, default=30_000)
     parser.add_argument("--max_vertices", type=int, default=100_000)
     parser.add_argument("--max_edge_length", type=float, default=0.0)
