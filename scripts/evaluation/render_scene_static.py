@@ -34,7 +34,7 @@ import math
 from scene.dynamic_scene import DynamicGaussianScene
 import copy
 
-def training(dataset, opt: SDSOptimizationParams, checkpoint, no_bg, save_rgba):
+def training(dataset, opt: SDSOptimizationParams, checkpoint, no_bg, save_rgba, azimuth_step=0, output_dir=None):
     dynamic_scene = DynamicGaussianScene(opt.frame_num)
     for i in range(opt.obj_num):
         print("Adding object {}".format(i))
@@ -66,6 +66,10 @@ def training(dataset, opt: SDSOptimizationParams, checkpoint, no_bg, save_rgba):
 
     # print("Print gs number: ", gaussians.get_xyz.shape[0])
     azims = [0, 15, 30, 45, 60, 75, 90, 120, 150, 180, 240, 270, 300, 300, 330, 345]
+    if azimuth_step:
+        azims = list(range(0, 360, azimuth_step))
+    if output_dir:
+        video_path = output_dir
     if opt.invert_bg_prob <=0.0:
         bg = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32, device="cuda")
     else:
@@ -127,7 +131,11 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--no_bg", action="store_true", help="Do not use background in the model")
     parser.add_argument("--save_rgba", action="store_true", help="Save rgba images")
+    parser.add_argument("--azimuth_step", type=int, default=0, help="Orbit spacing in degrees; 0 uses legacy views")
+    parser.add_argument("--output_dir", default=None, help="Optional directory for rendered PNGs")
     args = parser.parse_args(sys.argv[1:])
+    if not 0 <= args.azimuth_step < 360:
+        parser.error("--azimuth_step must be between 0 and 359")
 
     print("Optimizing " + args.model_path)
 
@@ -138,7 +146,7 @@ if __name__ == "__main__":
     dataset = lp.extract(args)
     opt = op.extract(args)
     resolve_scene_obj_num(opt, dataset.mesh_source_path)
-    training(dataset, opt, args.checkpoint, args.no_bg, args.save_rgba)
+    training(dataset, opt, args.checkpoint, args.no_bg, args.save_rgba, args.azimuth_step, args.output_dir)
 
     # All done
     print("\nTraining complete.")
