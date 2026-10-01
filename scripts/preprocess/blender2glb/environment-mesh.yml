@@ -1,0 +1,12 @@
+name: chord-mesh
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - bpy==4.5.3
+      - numpy==1.26.4
+      - trimesh==5.1.0
+      - pillow==12.3.0
+      - scipy==1.17.1
