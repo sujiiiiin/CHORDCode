@@ -115,7 +115,7 @@ class BitMotionBase:
             final_rot = final_deform[:, :4]
             final_trans = final_deform[:, 4:]
             final_rot = self.rot_activate(final_rot)
-            if query_time == 0:
+            if query_time == 0: # 首帧特判为单位形变
                 final_rot = final_rot.detach()
                 final_trans = final_trans.detach()
             return final_rot, final_trans
