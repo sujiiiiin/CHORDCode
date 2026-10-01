@@ -11,3 +11,4 @@ submodules/simple-knn/simple_knn.egg-info
 submodules/simple-knn/build
 debug/
 logs/
+/mydata/
