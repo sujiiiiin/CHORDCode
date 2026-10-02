@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=30:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/broom_with_trashbag_izar-%j.out
 
 #SBATCH --chdir=/home/ydu/code/CHORDCode
@@ -15,15 +15,19 @@
 set -euo pipefail
 
 # Based on example/assassin_with_eagle_izar_v100.sh.
-# Supervision: Wan2.2 I2V-A14B (not TI2V-5B).
-# Prompt copied from data/broom_with_trashbag/prompt.txt.
+# Supervision: Wan2.2 TI2V-5B; full VAE, CPU-offloaded split SDS backward.
+# Prompt loaded from data/broom_with_trashbag/prompt.txt.
 # Run this inside a Slurm allocation with one V100 and at least 64 GB system RAM.
 
 REPO_DIR="$PWD"
 CONDA_ENV_DIR="${CONDA_ENV_DIR:-/scratch/izar/ydu/.conda/envs/chord0}"
 PYTHON_BIN="$CONDA_ENV_DIR/bin/python"
-EX_NAME="${EX_NAME:-broom_with_trashbag_izar_v100}"
+EX_NAME="${EX_NAME:-broom_with_trashbag_ti2v_izar_v100}"
 ITERATIONS="${ITERATIONS:-3000}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-500}"
+CKPT_DIR="${CKPT_DIR:-/scratch/izar/ydu/checkpoints/Wan2.2-TI2V-5B}"
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_HOME="$CONDA_ENV_DIR"
@@ -33,6 +37,13 @@ export TORCH_CUDA_ARCH_LIST="7.0"
 cd "$REPO_DIR"
 
 mkdir -p logs
+
+# Require all three final preprocessing outputs before starting motion training.
+for obj in obj_0 obj_1 obj_2; do
+  test -s "trained/broom_with_trashbag/$obj/point_cloud/iteration_50000/point_cloud.ply"
+done
+PROMPT="$(cat data/broom_with_trashbag/prompt.txt)"
+test -n "$PROMPT"
 
 "$PYTHON_BIN" train.py \
   --ex_name "$EX_NAME" \
@@ -63,20 +74,18 @@ mkdir -p logs
   --last_cfg_scale 12.0 \
   --init_cfg_scale 25.0 \
   --frame_num 41 \
-  --save_interval 500 \
+  --save_interval "$SAVE_INTERVAL" \
   --mesh_source_path data/broom_with_trashbag/ \
   --model_path trained/broom_with_trashbag \
-  --task i2v-A14B \
-  --size 416*240 \
-  --ckpt_dir ./Wan2.2-I2V-A14B \
-  --prompt "The broom sweeps forward against the lower side of the filled trash bag, denting the bag at the contact point and pushing it a short distance across the floor, then draws back as the bag settles." \
+  --task ti2v-5B \
+  --size "832*480" \
+  --ckpt_dir "$CKPT_DIR" \
+  --prompt "$PROMPT" \
   --n_prompt "." \
-  --use_tiny_vae \
-  --enable_mmgp \
-  --mmgp_profile 4.0 \
-  --mmgp_transformer_budget 100 \
+  --t5_cpu \
+  --convert_model_dtype \
   --split_sds_backward \
   --split_render_backward \
-  --split_render_chunk_size 21 \
+  --split_render_chunk_size 7 \
   --log_run_time \
   --iterations "$ITERATIONS"
