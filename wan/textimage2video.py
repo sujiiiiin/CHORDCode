@@ -22,6 +22,7 @@ from .distributed.util import get_world_size
 from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
 from .modules.vae2_2 import Wan2_2_VAE
+from .image2video import _resolve_wan_dtype
 from .utils.fm_solvers import (
     FlowDPMSolverMultistepScheduler,
     get_sampling_sigmas,
@@ -129,7 +130,7 @@ class WanTI2V:
         self.init_on_cpu = init_on_cpu
 
         self.num_train_timesteps = config.num_train_timesteps
-        self.param_dtype = config.param_dtype
+        self.param_dtype = _resolve_wan_dtype(config.param_dtype, self.device)
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -695,6 +696,17 @@ class WanTI2V:
     
     
 
+    def _compute_latent_shape(self, size, frame_num):
+        width, height = size
+        dw = self.patch_size[2] * self.vae_stride[2]
+        dh = self.patch_size[1] * self.vae_stride[1]
+        width, height = best_output_size(width, height, dw, dh, width * height)
+        lat_w, lat_h = width // self.vae_stride[2], height // self.vae_stride[1]
+        seq_len = ((frame_num - 1) // self.vae_stride[0] + 1) * lat_h * lat_w
+        seq_len //= self.patch_size[1] * self.patch_size[2]
+        seq_len = int(math.ceil(seq_len / self.sp_size)) * self.sp_size
+        return width, height, lat_w, lat_h, seq_len
+
     def sds_setup(self, input_prompt, t_range=[0.02, 0.98], sample_solver='unipc', frame_num=81, size=(1280, 720)
                   , unet_to_device="cuda", vae_to_device="cuda", resample_timestep = False, sds_iterations=3000, n_prompt="",
                   del_decoder=False):
@@ -705,31 +717,9 @@ class WanTI2V:
         self.max_step = int(self.num_train_timesteps * t_range[1])
 
         F = frame_num
-        w = size[0]
-        h = size[1]
-        ih, iw = h, w
-        
-        dh, dw = self.patch_size[1] * self.vae_stride[1], self.patch_size[
-            2] * self.vae_stride[2]
-        max_area = 704 * 1280
-        ow, oh = best_output_size(iw, ih, dw, dh, max_area)
+        ow, oh, self.lat_w, self.lat_h, seq_len = self._compute_latent_shape(size, F)
+        self.w, self.h, self.seq_len = ow, oh, seq_len
 
-        scale = max(ow / iw, oh / ih)
-        
-        self.w = round(iw * scale)
-        self.h = round(ih * scale)
-        
-        F = frame_num
-        seq_len = ((F - 1) // self.vae_stride[0] + 1) * (
-            oh // self.vae_stride[1]) * (ow // self.vae_stride[2]) // (
-                self.patch_size[1] * self.patch_size[2])
-        seq_len = int(math.ceil(seq_len / self.sp_size)) * self.sp_size
-        
-        self.seq_len = seq_len
-                    
-        self.lat_h = oh // self.vae_stride[1]
-        self.lat_w = ow // self.vae_stride[2]
-        
         # if sample_solver == 'unipc':
         #     scheduler = FlowUniPCMultistepScheduler(
         #         num_train_timesteps=self.num_train_timesteps,
@@ -837,6 +827,34 @@ class WanTI2V:
         latents = self.vae.encode([pred_rgb], use_ckpt=True)[0]
         loss = 0.5 * F.mse_loss(latents[:,1:].float(), target[:,1:], reduction='sum')
         return loss
+
+    def compute_sds_targets(self, pred_rgbs_detached, step_ratio=None,
+                            ref_imgs=None, guidance_scale=100.0, pred_flow=False,
+                            log_run_time=False, use_tiny_vae=False):
+        """Reuse TI2V's SDS target equation without retaining a render/VAE graph."""
+        if use_tiny_vae:
+            raise ValueError('TI2V requires the Wan2.2 VAE, not the I2V Tiny VAE.')
+        original_off_load = self.off_load
+        self.off_load = True
+        try:
+            with torch.no_grad():
+                return [self.sds_step(
+                    video.detach(), step_ratio=step_ratio,
+                    ref_img=None if ref_imgs is None else ref_imgs[index],
+                    guidance_scale=guidance_scale, pred_flow=pred_flow,
+                    log_run_time=log_run_time,
+                ) for index, video in enumerate(pred_rgbs_detached)]
+        finally:
+            self.off_load = original_off_load
+
+    def release_active_dit_after_target(self, log_run_time=False):
+        self.model.cpu()
+        torch.cuda.empty_cache()
+
+    def sds_loss_from_target(self, pred_rgb, target, use_tiny_vae=False):
+        if use_tiny_vae:
+            raise ValueError('TI2V requires the Wan2.2 VAE, not the I2V Tiny VAE.')
+        return self.calc_sds_loss(pred_rgb, target)
     
     def get_latents(self, pred_rgb):
         pred_rgb = pred_rgb * 2.0 - 1.0

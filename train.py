@@ -404,6 +404,7 @@ def generate_distributed(args, dataset, opt: SDSOptimizationParams, ddp):
             t5_cpu=args.t5_cpu,
             convert_model_dtype=args.convert_model_dtype,
             init_on_cpu=True,
+            off_load=opt.split_sds_backward,
         )
     else:
         wan_guide = wan.WanI2V(
@@ -422,7 +423,7 @@ def generate_distributed(args, dataset, opt: SDSOptimizationParams, ddp):
         )
 
     if opt.split_sds_backward and not hasattr(wan_guide, "compute_sds_targets"):
-        raise ValueError("--split_sds_backward batch target generation is currently supported only for Wan I2V.")
+        raise ValueError("Selected Wan pipeline does not support --split_sds_backward.")
 
     wan_guide.sds_setup(
         args.prompt,
