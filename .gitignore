@@ -2,13 +2,29 @@ __pycache__/
 trained/
 data/
 models/
-tiny_vae/
 LightX2VModel/
 .vscode/
-Wan2.2-I2V-A14B
-mydocs/
+mydocs/*
+!mydocs/experiment_diary.md
+!mydocs/experiment_diary_sources.md
 submodules/simple-knn/simple_knn.egg-info
 submodules/simple-knn/build
 debug/
 logs/
 /mydata/
+
+ckpts/
+runs/
+archived_chord/3Dassets/
+.DS_Store
+
+# Local recovery helpers and archived binary presentation assets
+/.tools/
+/archived_chord/upstream/assets/
+# Model weights and asset archives
+*.pth
+*.pt
+*.safetensors
+*.ckpt
+*.zip
+*.tar.gz

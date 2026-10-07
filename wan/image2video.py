@@ -413,12 +413,12 @@ class WanI2V:
         pred_rgb = pred_rgb.permute(1, 0, 2, 3)
         return self.vae.encode([pred_rgb])[0]
 
-    def load_tiny_vae(self, vae_path="tiny_vae/lighttaew2_1.pth", dtype=torch.float32):
+    def load_tiny_vae(self, vae_path="ckpts/tiny_vae/lighttaew2_1.pth", dtype=torch.float32):
         if not os.path.exists(vae_path):
             raise FileNotFoundError(
                 f"Tiny VAE checkpoint not found: {vae_path}\n"
                 "Download the compatible checkpoint with:\n"
-                "  huggingface-cli download lightx2v/Autoencoders lighttaew2_1.pth --local-dir ./tiny_vae/"
+                "  huggingface-cli download lightx2v/Autoencoders lighttaew2_1.pth --local-dir ./ckpts/tiny_vae/"
             )
 
         try:

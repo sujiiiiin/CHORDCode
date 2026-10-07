@@ -186,7 +186,7 @@ class SDSOptimizationParams(ParamGroup):
 
         self.n_prompt = "."
         self.use_tiny_vae = False
-        self.tiny_vae_path = "tiny_vae/lighttaew2_1.pth"
+        self.tiny_vae_path = "ckpts/tiny_vae/lighttaew2_1.pth"
 
         self.split_sds_backward = False
         self.enable_mmgp = False

@@ -192,7 +192,7 @@ def convert(blend, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path, default=Path('mydata/3Dassets'))
+    parser.add_argument('--source', type=Path, default=Path('archived_chord/3Dassets'))
     parser.add_argument('--only', help='Archive name prefix for a pilot conversion')
     parser.add_argument('--resume', action='store_true', help='Reuse completed reports')
     parser.add_argument('--worker', type=Path)

@@ -12,7 +12,7 @@ python scripts/preprocess/blender2glb/build_demo_scenes.py
 python scripts/preprocess/blender2glb/check_demo_scenes.py
 ```
 
-- `export_blend_assets.py`: extract `mydata/3Dassets/*.blend.zip`, export textured
+- `export_blend_assets.py`: extract `archived_chord/3Dassets/*.blend.zip`, export textured
   GLB and OBJ, and write per-asset reports and a manifest.
 - `build_demo_scenes.py`: assemble the five approved asset pairs under `data/`,
   including object splits, floor, prompts and static previews. Use `--scene`

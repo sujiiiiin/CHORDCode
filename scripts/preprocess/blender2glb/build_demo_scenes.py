@@ -54,7 +54,7 @@ def build(name):
         bpy.context.view_layer.update()
 
     def load(asset_id, selection=None):
-        path = next((ROOT / 'mydata/3Dassets/converted').glob(f'{asset_id:02d}_*')) / 'asset.glb'
+        path = next((ROOT / 'archived_chord/3Dassets/converted').glob(f'{asset_id:02d}_*')) / 'asset.glb'
         before = set(bpy.data.objects)
         bpy.ops.import_scene.gltf(filepath=str(path))
         new = set(bpy.data.objects) - before
@@ -167,8 +167,8 @@ Asset pair: {spec['active']:02d} + {spec['passive']:02d}.
 
 {spec['prompt']}
 
-Original CHORD prompts live in `example/*.sh` as `--prompt` arguments; see
-`example/cat_with_cushion.sh`. These new text files are a convenience, not an
+Original CHORD prompts live in `archived_chord/upstream/example/*.sh` as `--prompt` arguments; see
+`archived_chord/upstream/example/cat_with_cushion.sh`. These new text files are a convenience, not an
 automatically discovered CHORD input. Pass their contents explicitly:
 
 ```bash

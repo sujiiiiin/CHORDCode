@@ -182,7 +182,7 @@ The evaluation output directory contains:
 
   #### --ckpt_dir
 
-  Video-model checkpoint directory. The default `./LightX2VModel` should point to the downloaded LightX2V step-distilled Wan2.2 I2V model; with `--use_original_wan`, the default is `./Wan2.2-I2V-A14B`.
+  Video-model checkpoint directory. The default `./LightX2VModel` should point to the downloaded LightX2V step-distilled Wan2.2 I2V model; with `--use_original_wan`, the default is `./ckpts/Wan2.2-I2V-A14B`.
 
   #### --size
 

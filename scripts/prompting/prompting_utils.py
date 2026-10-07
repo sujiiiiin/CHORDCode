@@ -332,7 +332,7 @@ def resolve_video_generation_args(args):
 
     cfg = WAN_CONFIGS["i2v-A14B"]
     if args.ckpt_dir is None:
-        args.ckpt_dir = "./Wan2.2-I2V-A14B" if args.use_original_wan else "./LightX2VModel"
+        args.ckpt_dir = "./ckpts/Wan2.2-I2V-A14B" if args.use_original_wan else "./LightX2VModel"
 
     if args.use_original_wan:
         args.ckpt_dir = str(validate_original_wan_i2v_model_dir(args.ckpt_dir))
@@ -822,7 +822,7 @@ def validate_original_wan_i2v_model_dir(model_dir) -> Path:
         raise FileNotFoundError(
             "Original Wan2.2 I2V checkpoint directory is incomplete. "
             f"Expected full Wan2.2 model files under {model_path}. Missing: {missing_text}. "
-            "Use --ckpt_dir to point to ./Wan2.2-I2V-A14B, or remove --use_original_wan "
+            "Use --ckpt_dir to point to ./ckpts/Wan2.2-I2V-A14B, or remove --use_original_wan "
             "to use the LightX2V step-distilled backend."
         )
     if not any((model_path / "high_noise_model").glob("*.safetensors")):
